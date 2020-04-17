@@ -170,8 +170,10 @@ static void zone_lock(struct thread_data *td, struct fio_zone_info *z)
 	if (pthread_mutex_trylock(&z->mutex) != 0) {
 		if (!td_ioengine_flagged(td, FIO_SYNCIO))
 			io_u_quiesce(td);
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z->start);
 		pthread_mutex_lock(&z->mutex);
 	}
+	dprint(FD_MUTEX, "zbd(%s): Took zone lock %lu \n", __func__,  z->start);
 }
 
 static bool is_valid_offset(const struct fio_file *f, uint64_t offset)
@@ -549,9 +551,12 @@ void zbd_free_zone_info(struct fio_file *f)
 	if (!f->zbd_info)
 		return;
 
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	refcount = --f->zbd_info->refcount;
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 
 	assert((int32_t)refcount >= 0);
 	if (refcount == 0)
@@ -650,13 +655,19 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 	zone_idx_e = zbd_zone_idx(f, offset + length);
 	ze = &f->zbd_info->zone_info[zone_idx_e];
 	for (z = zb; z < ze; z++) {
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z->start);
 		pthread_mutex_lock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zone lock %lu \n", __func__,  z->start);
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 		pthread_mutex_lock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 		f->zbd_info->sectors_with_data -= z->wp - z->start;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		z->wp = z->start;
 		z->verify_block = 0;
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 	}
 
 	td->ts.nr_zone_resets += ze - zb;
@@ -734,12 +745,15 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 		if (all_zones) {
 			unsigned int i;
 
+			dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 			pthread_mutex_lock(&f->zbd_info->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 			for (i = 0; i < f->zbd_info->num_open_zones; i++) {
 				if (f->zbd_info->open_zones[i] == nz)
 					zbd_close_zone(td, f, i);
 			}
 			pthread_mutex_unlock(&f->zbd_info->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 
 			reset_wp = z->wp != z->start;
 		} else {
@@ -754,6 +768,7 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 				res = 1;
 		}
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 	}
 
 	return res;
@@ -768,10 +783,13 @@ static void zbd_reset_write_cnt(const struct thread_data *td,
 {
 	assert(0 <= td->o.zrf.u.f && td->o.zrf.u.f <= 1);
 
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	f->zbd_info->write_cnt = td->o.zrf.u.f ?
 		min(1.0 / td->o.zrf.u.f, 0.0 + UINT_MAX) : UINT_MAX;
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 }
 
 static bool zbd_dec_and_reset_write_cnt(const struct thread_data *td,
@@ -779,13 +797,16 @@ static bool zbd_dec_and_reset_write_cnt(const struct thread_data *td,
 {
 	uint32_t write_cnt = 0;
 
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	assert(f->zbd_info->write_cnt);
 	if (f->zbd_info->write_cnt)
 		write_cnt = --f->zbd_info->write_cnt;
 	if (write_cnt == 0)
 		zbd_reset_write_cnt(td, f);
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 
 	return write_cnt == 0;
 }
@@ -805,10 +826,14 @@ static uint64_t zbd_process_swd(const struct fio_file *f, enum swd_action a)
 	ze = &f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset +
 						  f->io_size)];
 	for (z = zb; z < ze; z++) {
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z->start);
 		pthread_mutex_lock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zone lock %lu \n", __func__,  z->start);
 		swd += z->wp - z->start;
 	}
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	switch (a) {
 	case CHECK_SWD:
 		assert(f->zbd_info->sectors_with_data == swd);
@@ -818,8 +843,10 @@ static uint64_t zbd_process_swd(const struct fio_file *f, enum swd_action a)
 		break;
 	}
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 	for (z = zb; z < ze; z++)
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 
 	return swd;
 }
@@ -919,7 +946,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (!td->o.max_open_zones)
 		return true;
 
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	if (is_zone_open(td, f, zone_idx))
 		goto out;
 	res = false;
@@ -932,6 +961,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 
 out:
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 	return res;
 }
 
@@ -985,12 +1015,16 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 		z = &f->zbd_info->zone_info[zone_idx];
 
 		zone_lock(td, z);
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 		pthread_mutex_lock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 		if (td->o.max_open_zones == 0)
 			goto examine_zone;
 		if (f->zbd_info->num_open_zones == 0) {
 			pthread_mutex_unlock(&f->zbd_info->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 			pthread_mutex_unlock(&z->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 			dprint(FD_ZBD, "%s(%s): no zones are open\n",
 			       __func__, f->file_name);
 			return NULL;
@@ -1022,7 +1056,9 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 		dprint(FD_ZBD, "%s(%s): no candidate zone\n",
 			__func__, f->file_name);
 		pthread_mutex_unlock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 		return NULL;
 
 found_candidate_zone:
@@ -1031,7 +1067,9 @@ found_candidate_zone:
 			break;
 		zone_idx = new_zone_idx;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 	}
 
 	/* Both z->mutex and f->zbd_info->mutex are held. */
@@ -1039,6 +1077,7 @@ found_candidate_zone:
 examine_zone:
 	if (z->wp + min_bs <= (z+1)->start) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		goto out;
 	}
 	dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
@@ -1046,6 +1085,8 @@ examine_zone:
 	if (td->o.max_open_zones)
 		zbd_close_zone(td, f, open_zone_idx);
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
+
 
 	/* Only z->mutex is held. */
 
@@ -1053,6 +1094,7 @@ examine_zone:
 	for (i = f->io_size / f->zbd_info->zone_size; i > 0; i--) {
 		zone_idx++;
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 		z++;
 		if (!is_valid_offset(f, z->start)) {
 			/* Wrap-around. */
@@ -1070,7 +1112,9 @@ examine_zone:
 	/* Only z->mutex is held. */
 
 	/* Check whether the write fits in any of the already opened zones. */
+	dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 	pthread_mutex_lock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	for (i = 0; i < f->zbd_info->num_open_zones; i++) {
 		zone_idx = f->zbd_info->open_zones[i];
 		pthread_mutex_unlock(&f->zbd_info->mutex);
@@ -1081,10 +1125,14 @@ examine_zone:
 		zone_lock(td, z);
 		if (z->wp + min_bs <= (z+1)->start)
 			goto out;
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 		pthread_mutex_lock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 	}
 	pthread_mutex_unlock(&f->zbd_info->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 	pthread_mutex_unlock(&z->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 	dprint(FD_ZBD, "%s(%s): did not open another zone\n", __func__,
 	       f->file_name);
 	return NULL;
@@ -1141,19 +1189,25 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	 */
 	for (z1 = zb + 1, z2 = zb - 1; z1 < zl || z2 >= zf; z1++, z2--) {
 		if (z1 < zl && z1->cond != ZBD_ZONE_COND_OFFLINE) {
+			dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z1->start);
 			pthread_mutex_lock(&z1->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Took zone lock %lu \n", __func__,  z1->start);
 			if (z1->start + min_bs <= z1->wp)
 				return z1;
 			pthread_mutex_unlock(&z1->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z1->start);
 		} else if (!td_random(td)) {
 			break;
 		}
 		if (td_random(td) && z2 >= zf &&
 		    z2->cond != ZBD_ZONE_COND_OFFLINE) {
+			dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z1->start);
 			pthread_mutex_lock(&z2->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z2->start);
 			if (z2->start + min_bs <= z2->wp)
 				return z2;
 			pthread_mutex_unlock(&z2->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z2->start);
 		}
 	}
 	dprint(FD_ZBD, "%s: adjusting random read offset failed\n",
@@ -1199,7 +1253,9 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 	case DDIR_WRITE:
 		zone_end = min((uint64_t)(io_u->offset + io_u->buflen),
 			       (z + 1)->start);
+		dprint(FD_MUTEX, "zbd(%s): Waiting for zoned device lock \n", __func__);
 		pthread_mutex_lock(&zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Took zoned device lock \n", __func__);
 		/*
 		 * z->wp > zone_end means that one or more I/O errors
 		 * have occurred.
@@ -1207,6 +1263,7 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 		if (z->wp <= zone_end)
 			zbd_info->sectors_with_data += zone_end - z->wp;
 		pthread_mutex_unlock(&zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		z->wp = zone_end;
 		break;
 	case DDIR_TRIM:
@@ -1220,6 +1277,7 @@ unlock:
 	if (!success || q != FIO_Q_QUEUED) {
 		/* BUSY or COMPLETED: unlock the zone */
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__, z->start);
 		io_u->zbd_put_io = NULL;
 	}
 }
