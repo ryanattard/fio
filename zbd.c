@@ -1440,6 +1440,11 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 
 	if (!f->zbd_info)
 		return io_u_accept;
+	if (fio_file_closing(f)) {
+		if (!td_ioengine_flagged(td, FIO_SYNCIO))
+			io_u_quiesce(td);
+		return io_u_eof;
+	}
 
 	assert(min_bs);
 	assert(is_valid_offset(f, io_u->offset));
