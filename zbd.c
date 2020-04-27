@@ -1118,7 +1118,9 @@ examine_zone:
 	for (i = 0; i < f->zbd_info->num_open_zones; i++) {
 		zone_idx = f->zbd_info->open_zones[i];
 		pthread_mutex_unlock(&f->zbd_info->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zoned device lock \n", __func__);
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 
 		z = &f->zbd_info->zone_info[zone_idx];
 
@@ -1154,6 +1156,7 @@ static struct fio_zone_info *zbd_replay_write_order(struct thread_data *td,
 
 	if (!zbd_open_zone(td, io_u, z - f->zbd_info->zone_info)) {
 		pthread_mutex_unlock(&z->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 		z = zbd_convert_to_open_zone(td, io_u);
 		assert(z);
 	}
@@ -1309,6 +1312,7 @@ static void zbd_put_io(const struct io_u *io_u)
 	       f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
 	ret = pthread_mutex_unlock(&z->mutex);
+	dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  z->start);
 	assert(ret == 0);
 	zbd_check_swd(f);
 }
@@ -1485,6 +1489,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		if (range < min_bs ||
 		    ((!td_random(td)) && (io_u->offset + min_bs > zb->wp))) {
 			pthread_mutex_unlock(&zb->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  zb->start);
 			zl = &f->zbd_info->zone_info[zbd_zone_idx(f,
 						f->file_offset + f->io_size)];
 			zb = zbd_find_zone(td, io_u, zb, zl);
@@ -1534,6 +1539,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			goto eof;
 		if (!zbd_open_zone(td, io_u, zone_idx_b)) {
 			pthread_mutex_unlock(&zb->mutex);
+			dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  zb->start);
 			zb = zbd_convert_to_open_zone(td, io_u);
 			if (!zb)
 				goto eof;
@@ -1615,6 +1621,7 @@ accept:
 eof:
 	if (zb)
 		pthread_mutex_unlock(&zb->mutex);
+		dprint(FD_MUTEX, "zbd(%s): Released zone lock %lu \n", __func__,  zb->start);
 	return io_u_eof;
 }
 
