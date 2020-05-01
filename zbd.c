@@ -1204,7 +1204,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 		}
 		if (td_random(td) && z2 >= zf &&
 		    z2->cond != ZBD_ZONE_COND_OFFLINE) {
-			dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z1->start);
+			dprint(FD_MUTEX, "zbd(%s): Waiting for zone lock %lu \n", __func__, z2->start);
 			pthread_mutex_lock(&z2->mutex);
 			dprint(FD_MUTEX, "zbd(%s): Took zone lock %lu \n", __func__,  z2->start);
 			if (z2->start + min_bs <= z2->wp)
